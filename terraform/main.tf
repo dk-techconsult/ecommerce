@@ -146,11 +146,11 @@ resource "aws_security_group" "rds" {
 
 # RDS Subnet Group
 resource "aws_db_subnet_group" "main" {
-  name       = "simplcommerce-subnet-group"
+  name       = "simplcommerce-subnet-group-v2"
   subnet_ids = [aws_subnet.private_a.id, aws_subnet.private_b.id]
 
   tags = {
-    Name = "simplcommerce-subnet-group"
+    Name = "simplcommerce-subnet-group-v2"
   }
 }
 
@@ -187,7 +187,7 @@ resource "aws_db_instance" "postgres" {
 
 # EC2 Instance (without IAM role to avoid permissions issues)
 resource "aws_instance" "web" {
-  ami                    = "ami-0aff18ec83b712f05" # Ubuntu 22.04 LTS
+  ami                    = "ami-0866a3c8686eaeeba" # Ubuntu 22.04 LTS (us-east-1)
   instance_type          = var.instance_type
   key_name               = "tc"
   vpc_security_group_ids = [aws_security_group.ec2.id]
