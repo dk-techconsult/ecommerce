@@ -1,4 +1,4 @@
-name: Deploy SimplCommerce to AWS (Force Delete RDS + Full Destroy)
+name: Deploy SimplCommerce to AWS (Force Delete RDS + Subnet Group + Full Destroy)
 
 on:
   push:
@@ -9,6 +9,7 @@ env:
   AWS_REGION: us-west-1
   TF_VERSION: 1.13.3
   RDS_INSTANCE_ID: simplcommerce-db
+  RDS_DB_SUBNET_GROUP: simplcommerce-subnet-group-v2
 
 jobs:
   terraform:
@@ -49,7 +50,7 @@ jobs:
     - name: Terraform Init
       run: terraform init
 
-    - name: Force delete RDS instance before destroy
+    - name: Force delete RDS resources before destroy
       run: |
         echo "Disabling deletion protection for RDS instance..."
         aws rds modify-db-instance --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --no-deletion-protection --region ${{ env.AWS_REGION }} || echo "Modify deletion protection failed or already disabled"
@@ -59,6 +60,9 @@ jobs:
 
         echo "Waiting for RDS instance to be deleted..."
         aws rds wait db-instance-deleted --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --region ${{ env.AWS_REGION }} || echo "Wait for deletion failed or instance already deleted"
+
+        echo "Deleting RDS DB Subnet Group..."
+        aws rds delete-db-subnet-group --db-subnet-group-name ${{ env.RDS_DB_SUBNET_GROUP }} --region ${{ env.AWS_REGION }} || echo "Subnet group not found or already deleted"
 
     - name: Terraform Destroy ALL (Always Run First)
       run: terraform destroy -auto-approve -input=false || echo "Destroy failed or nothing to destroy, continuing"
@@ -86,16 +90,18 @@ jobs:
           sleep 30
         done
 
-    - name: Cleanup on Failure (Force Delete RDS + Destroy All)
+    - name: Cleanup on Failure (Force Delete RDS + Subnet Group + Destroy All)
       if: failure()
       run: |
-        echo "Deployment failed! Force deleting RDS and destroying ALL resources..."
+        echo "Deployment failed! Force deleting RDS resources and destroying ALL..."
 
         aws rds modify-db-instance --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --no-deletion-protection --region ${{ env.AWS_REGION }} || echo "Modify deletion protection failed or already disabled"
 
         aws rds delete-db-instance --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --skip-final-snapshot --region ${{ env.AWS_REGION }} || echo "Delete DB instance failed or already deleted"
 
         aws rds wait db-instance-deleted --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --region ${{ env.AWS_REGION }} || echo "Wait for deletion failed or instance already deleted"
+
+        aws rds delete-db-subnet-group --db-subnet-group-name ${{ env.RDS_DB_SUBNET_GROUP }} --region ${{ env.AWS_REGION }} || echo "Subnet group not found or already deleted"
 
         terraform destroy -auto-approve -input=false || echo "Destroy failed but continuing"
 
