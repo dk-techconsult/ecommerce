@@ -2,7 +2,7 @@ name: Deploy SimplCommerce to AWS
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   workflow_dispatch:
 
 env:
@@ -11,7 +11,7 @@ env:
 
 jobs:
   terraform:
-    name: 'Deploy Infrastructure and Application'
+    name: Deploy Infrastructure and Application
     runs-on: ubuntu-latest
     environment: production
 
@@ -21,84 +21,85 @@ jobs:
         working-directory: ./terraform
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: ${{ env.TF_VERSION }}
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-    - name: Create terraform.tfvars
-      run: |
-        cat > terraform.tfvars << EOF
-        aws_region    = "${{ env.AWS_REGION }}"
-        instance_type = "t3.small"
-        db_username   = "postgres"
-        db_password   = "${{ secrets.DB_PASSWORD }}"
-        EOF
+      - name: Create terraform.tfvars
+        run: |
+          cat > terraform.tfvars <<EOF
+          aws_region    = "${{ env.AWS_REGION }}"
+          instance_type = "t3.small"
+          db_username   = "postgres"
+          db_password   = "${{ secrets.DB_PASSWORD }}"
+          EOF
 
-    - name: Terraform Init
-      run: terraform init
+      - name: Terraform Init
+        run: terraform init
 
-    - name: Terraform Plan
-      run: terraform plan -input=false
+      - name: Import existing DB Subnet Group (if exists)
+        run: |
+          terraform import aws_db_subnet_group.main simplcommerce-subnet-group-v2 || echo "Skipping: Subnet group already managed or does not exist"
 
-    - name: Destroy existing resources first
-      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-      run: terraform destroy -auto-approve -input=false
-      continue-on-error: true
+      # Add more import commands here for other persistent resources
+      # Example:
+      # - terraform import aws_vpc.main vpc-xxxxxxxx || echo "Skipping: VPC already managed or does not exist"
 
-    - name: Terraform Apply (Fresh Deploy)
-      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-      id: terraform-apply
-      run: terraform apply -auto-approve -input=false
+      - name: Terraform Plan
+        run: terraform plan -input=false
 
-    - name: Get Terraform Outputs
-      if: steps.terraform-apply.outcome == 'success'
-      run: |
-        echo "PUBLIC_IP=$(terraform output -raw public_ip)" >> $GITHUB_ENV
-        echo "APPLICATION_URL=$(terraform output -raw application_url)" >> $GITHUB_ENV
+      - name: Terraform Apply
+        id: terraform-apply
+        run: terraform apply -auto-approve -input=false
 
-    - name: Wait for Application
-      if: steps.terraform-apply.outcome == 'success'
-      run: |
-        echo "Waiting for application to be ready at ${{ env.APPLICATION_URL }}"
-        for i in {1..30}; do
-          if curl -f -s "${{ env.APPLICATION_URL }}" > /dev/null; then
-            echo "Application is ready!"
-            break
-          fi
-          echo "Attempt $i/30: Application not ready yet, waiting 30 seconds..."
-          sleep 30
-        done
+      - name: Get Terraform Outputs
+        if: steps.terraform-apply.outcome == 'success'
+        run: |
+          echo "PUBLIC_IP=$(terraform output -raw public_ip)" >> $GITHUB_ENV
+          echo "APPLICATION_URL=$(terraform output -raw application_url)" >> $GITHUB_ENV
 
-    - name: Cleanup on Failure
-      if: failure()
-      run: |
-        echo "Deployment failed, cleaning up all resources..."
-        terraform destroy -auto-approve -input=false
-      continue-on-error: true
+      - name: Wait for Application
+        if: steps.terraform-apply.outcome == 'success'
+        run: |
+          echo "Waiting for application to be ready at ${{ env.APPLICATION_URL }}"
+          for i in {1..30}; do
+            if curl -f -s "${{ env.APPLICATION_URL }}" > /dev/null; then
+              echo "Application is ready!"
+              break
+            fi
+            echo "Attempt $i/30: Application not ready yet, waiting 30 seconds..."
+            sleep 30
+          done
 
-    - name: Post Deployment Summary
-      if: steps.terraform-apply.outcome == 'success'
-      run: |
-        echo "## SimplCommerce Deployment Complete!" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Access Your Application" >> $GITHUB_STEP_SUMMARY
-        echo "**URL:** [${{ env.APPLICATION_URL }}](${{ env.APPLICATION_URL }})" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Details" >> $GITHUB_STEP_SUMMARY
-        echo "| Resource | Value |" >> $GITHUB_STEP_SUMMARY
-        echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
-        echo "| Public IP | ${{ env.PUBLIC_IP }} |" >> $GITHUB_STEP_SUMMARY
-        echo "| SSH Command | \`ssh -i tc.pem ubuntu@${{ env.PUBLIC_IP }}\` |" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Your SimplCommerce store is now live!"
+      - name: Cleanup on Failure
+        if: failure()
+        run: |
+          echo "Deployment failed — manual cleanup may be required."
+
+      - name: Post Deployment Summary
+        if: steps.terraform-apply.outcome == 'success'
+        run: |
+          echo "## SimplCommerce Deployment Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Access Your Application" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** [${{ env.APPLICATION_URL }}](${{ env.APPLICATION_URL }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Details" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Public IP | ${{ env.PUBLIC_IP }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SSH Command | \`ssh -i tc.pem ubuntu@${{ env.PUBLIC_IP }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Your SimplCommerce store is now live!"
+
