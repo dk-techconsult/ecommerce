@@ -66,7 +66,7 @@ docker run -d \
 # Create a simple health check script
 cat > /usr/local/bin/simplcommerce-health.sh << 'EOF'
 #!/bin/bash
-if curl -f -s http://localhost:5000/health > /dev/null 2>&1; then
+if curl -f -s http://localhost:5000 > /dev/null 2>&1; then
     echo "SimplCommerce is healthy"
     exit 0
 else
