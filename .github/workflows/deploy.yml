@@ -1,4 +1,4 @@
-name: Deploy SimplCommerce to AWS (Force Delete RDS + Subnet Group + Full Destroy)
+name: Deploy SimplCommerce to AWS (Force Delete + Wait for Postgres Ready)
 
 on:
   push:
@@ -76,19 +76,29 @@ jobs:
       run: |
         echo "PUBLIC_IP=$(terraform output -raw public_ip)" >> $GITHUB_ENV
         echo "APPLICATION_URL=$(terraform output -raw application_url)" >> $GITHUB_ENV
+        echo "DB_ENDPOINT=$(terraform output -raw db_endpoint)" >> $GITHUB_ENV
 
-    - name: Wait for Application
+    - name: Wait for Postgres DB to be ready
       if: steps.terraform-apply.outcome == 'success'
+      env:
+        PGPASSWORD: ${{ secrets.DB_PASSWORD }}
       run: |
-        echo "Waiting for application to be ready at ${{ env.APPLICATION_URL }}"
+        sudo apt-get update && sudo apt-get install -y postgresql-client
+        DB_HOST=${{ env.DB_ENDPOINT }}
+        DB_USER="postgres"
+        DB_NAME="postgres"
+        echo "Waiting for Postgres DB at $DB_HOST to be ready..."
         for i in {1..30}; do
-          if curl -f -s "${{ env.APPLICATION_URL }}" > /dev/null; then
-            echo "Application is ready!"
-            break
+          if psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -c '\q' 2>/dev/null; then
+            echo "Postgres DB is ready!"
+            exit 0
+          else
+            echo "Attempt $i/30: Postgres not ready yet, retrying in 10 seconds..."
+            sleep 10
           fi
-          echo "Attempt $i/30: Application not ready yet, waiting 30 seconds..."
-          sleep 30
         done
+        echo "Postgres DB did not become ready in time."
+        exit 1
 
     - name: Cleanup on Failure (Force Delete RDS + Subnet Group + Destroy All)
       if: failure()
