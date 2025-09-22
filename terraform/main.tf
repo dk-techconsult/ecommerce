@@ -158,7 +158,7 @@ resource "aws_db_subnet_group" "main" {
 resource "aws_db_instance" "postgres" {
   identifier     = "simplcommerce-db"
   engine         = "postgres"
-  engine_version = "15.4"
+  engine_version = "15.5"
   instance_class = "db.t3.micro"
   
   allocated_storage     = 20
@@ -185,37 +185,13 @@ resource "aws_db_instance" "postgres" {
   }
 }
 
-# IAM Role for EC2 (minimal permissions)
-resource "aws_iam_role" "ec2_role" {
-  name = "simplcommerce-ec2-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
-      }
-    ]
-  })
-}
-
-resource "aws_iam_instance_profile" "ec2_profile" {
-  name = "simplcommerce-ec2-profile"
-  role = aws_iam_role.ec2_role.name
-}
-
-# EC2 Instance
+# EC2 Instance (without IAM role to avoid permissions issues)
 resource "aws_instance" "web" {
   ami                    = "ami-0aff18ec83b712f05" # Ubuntu 22.04 LTS
   instance_type          = var.instance_type
   key_name               = "tc"
   vpc_security_group_ids = [aws_security_group.ec2.id]
   subnet_id              = aws_subnet.public.id
-  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
 
   user_data = base64encode(templatefile("${path.module}/user_data.sh", {
     db_host     = aws_db_instance.postgres.endpoint
