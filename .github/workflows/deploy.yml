@@ -1,4 +1,4 @@
-name: Deploy SimplCommerce to AWS (Force Delete + Wait for Postgres Ready)
+name: Deploy SimplCommerce to AWS
 
 on:
   push:
@@ -8,8 +8,6 @@ on:
 env:
   AWS_REGION: us-west-1
   TF_VERSION: 1.13.3
-  RDS_INSTANCE_ID: simplcommerce-db
-  RDS_DB_SUBNET_GROUP: simplcommerce-subnet-group-v2
 
 jobs:
   terraform:
@@ -50,24 +48,16 @@ jobs:
     - name: Terraform Init
       run: terraform init
 
-    - name: Force delete RDS resources before destroy
-      run: |
-        echo "Disabling deletion protection for RDS instance..."
-        aws rds modify-db-instance --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --no-deletion-protection --region ${{ env.AWS_REGION }} || echo "Modify deletion protection failed or already disabled"
+    - name: Terraform Plan
+      run: terraform plan -input=false
 
-        echo "Deleting RDS instance..."
-        aws rds delete-db-instance --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --skip-final-snapshot --region ${{ env.AWS_REGION }} || echo "Delete DB instance failed or already deleted"
+    - name: Destroy existing resources first
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      run: terraform destroy -auto-approve -input=false
+      continue-on-error: true
 
-        echo "Waiting for RDS instance to be deleted..."
-        aws rds wait db-instance-deleted --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --region ${{ env.AWS_REGION }} || echo "Wait for deletion failed or instance already deleted"
-
-        echo "Deleting RDS DB Subnet Group..."
-        aws rds delete-db-subnet-group --db-subnet-group-name ${{ env.RDS_DB_SUBNET_GROUP }} --region ${{ env.AWS_REGION }} || echo "Subnet group not found or already deleted"
-
-    - name: Terraform Destroy ALL (Always Run First)
-      run: terraform destroy -auto-approve -input=false || echo "Destroy failed or nothing to destroy, continuing"
-
-    - name: Terraform Apply (Clean Deploy)
+    - name: Terraform Apply (Fresh Deploy)
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
       id: terraform-apply
       run: terraform apply -auto-approve -input=false
 
@@ -76,44 +66,74 @@ jobs:
       run: |
         echo "PUBLIC_IP=$(terraform output -raw public_ip)" >> $GITHUB_ENV
         echo "APPLICATION_URL=$(terraform output -raw application_url)" >> $GITHUB_ENV
-        echo "DB_ENDPOINT=$(terraform output -raw db_endpoint)" >> $GITHUB_ENV
 
-    - name: Wait for Postgres DB to be ready
-      if: steps.terraform-apply.outcome == 'success'
-      env:
-        PGPASSWORD: ${{ secrets.DB_PASSWORD }}
-      run: |
-        sudo apt-get update && sudo apt-get install -y postgresql-client
-        DB_HOST=${{ env.DB_ENDPOINT }}
-        DB_USER="postgres"
-        DB_NAME="postgres"
-        echo "Waiting for Postgres DB at $DB_HOST to be ready..."
-        for i in {1..30}; do
-          if psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -c '\q' 2>/dev/null; then
-            echo "Postgres DB is ready!"
-            exit 0
-          else
-            echo "Attempt $i/30: Postgres not ready yet, retrying in 10 seconds..."
-            sleep 10
-          fi
-        done
-        echo "Postgres DB did not become ready in time."
-        exit 1
+    # Removed wait for app step as requested
 
-    - name: Cleanup on Failure (Force Delete RDS + Subnet Group + Destroy All)
+    - name: Cleanup on Failure (Delete resources in ONLY this deployment's VPC)
       if: failure()
+      env:
+        AWS_REGION: ${{ env.AWS_REGION }}
       run: |
-        echo "Deployment failed! Force deleting RDS resources and destroying ALL..."
+        echo "Deployment failed, cleaning up resources only in our deployment VPC(s)..."
 
-        aws rds modify-db-instance --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --no-deletion-protection --region ${{ env.AWS_REGION }} || echo "Modify deletion protection failed or already disabled"
+        # Define a unique tag key and value to identify your deployment VPC(s)
+        TAG_KEY="Project"
+        TAG_VALUE="SimplCommerce"
 
-        aws rds delete-db-instance --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --skip-final-snapshot --region ${{ env.AWS_REGION }} || echo "Delete DB instance failed or already deleted"
+        # Find all VPC IDs with this tag
+        VPC_IDS=$(aws ec2 describe-vpcs --filters "Name=tag:$TAG_KEY,Values=$TAG_VALUE" --region $AWS_REGION --query "Vpcs[].VpcId" --output text)
 
-        aws rds wait db-instance-deleted --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --region ${{ env.AWS_REGION }} || echo "Wait for deletion failed or instance already deleted"
+        if [ -z "$VPC_IDS" ]; then
+          echo "No VPCs found with tag $TAG_KEY=$TAG_VALUE"
+        else
+          for VPC_ID in $VPC_IDS; do
+            echo "Processing VPC $VPC_ID..."
 
-        aws rds delete-db-subnet-group --db-subnet-group-name ${{ env.RDS_DB_SUBNET_GROUP }} --region ${{ env.AWS_REGION }} || echo "Subnet group not found or already deleted"
+            # Delete Internet Gateways
+            IGW_IDS=$(aws ec2 describe-internet-gateways --filters "Name=attachment.vpc-id,Values=$VPC_ID" --region $AWS_REGION --query "InternetGateways[].InternetGatewayId" --output text)
+            for igw in $IGW_IDS; do
+              echo "Detaching and deleting IGW $igw"
+              aws ec2 detach-internet-gateway --internet-gateway-id $igw --vpc-id $VPC_ID --region $AWS_REGION || echo "Failed to detach IGW $igw"
+              aws ec2 delete-internet-gateway --internet-gateway-id $igw --region $AWS_REGION || echo "Failed to delete IGW $igw"
+            done
 
-        terraform destroy -auto-approve -input=false || echo "Destroy failed but continuing"
+            # Delete Subnets
+            SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --region $AWS_REGION --query "Subnets[].SubnetId" --output text)
+            for subnet in $SUBNET_IDS; do
+              echo "Deleting subnet $subnet"
+              aws ec2 delete-subnet --subnet-id $subnet --region $AWS_REGION || echo "Failed to delete subnet $subnet"
+            done
+
+            # Delete Route Tables except main
+            RTB_IDS=$(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" --region $AWS_REGION --query "RouteTables[?Associations[?Main==`false`]].RouteTableId" --output text)
+            for rtb in $RTB_IDS; do
+              echo "Deleting route table $rtb"
+              aws ec2 delete-route-table --route-table-id $rtb --region $AWS_REGION || echo "Failed to delete route table $rtb"
+            done
+
+            # Delete Network ACLs except default
+            ACL_IDS=$(aws ec2 describe-network-acls --filters "Name=vpc-id,Values=$VPC_ID" --region $AWS_REGION --query "NetworkAcls[?IsDefault==`false`].NetworkAclId" --output text)
+            for acl in $ACL_IDS; do
+              echo "Deleting network ACL $acl"
+              aws ec2 delete-network-acl --network-acl-id $acl --region $AWS_REGION || echo "Failed to delete network ACL $acl"
+            done
+
+            # Delete Security Groups except default
+            SG_IDS=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" --region $AWS_REGION --query "SecurityGroups[?GroupName!='default'].GroupId" --output text)
+            for sg in $SG_IDS; do
+              echo "Deleting security group $sg"
+              aws ec2 delete-security-group --group-id $sg --region $AWS_REGION || echo "Failed to delete security group $sg"
+            done
+
+            # Finally delete the VPC itself
+            echo "Deleting VPC $VPC_ID"
+            aws ec2 delete-vpc --vpc-id $VPC_ID --region $AWS_REGION || echo "Failed to delete VPC $VPC_ID"
+
+          done
+        fi
+
+        echo "Running terraform destroy as a final step..."
+        terraform destroy -auto-approve -input=false || echo "Terraform destroy failed."
 
     - name: Post Deployment Summary
       if: steps.terraform-apply.outcome == 'success'
