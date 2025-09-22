@@ -9,10 +9,6 @@ curl -fsSL https://get.docker.com -o get-docker.sh
 sh get-docker.sh
 usermod -aG docker ubuntu
 
-# Install Docker Compose
-curl -L "https://github.com/docker/compose/releases/download/v2.21.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-chmod +x /usr/local/bin/docker-compose
-
 # Install nginx (as reverse proxy)
 apt-get install -y nginx
 
@@ -47,23 +43,14 @@ nginx -t
 systemctl restart nginx
 systemctl enable nginx
 
-# Install AWS CLI and SSM Agent
-apt-get install -y awscli
-snap install amazon-ssm-agent --classic
-systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
-systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service
-
 # Create data directory
 mkdir -p /app/data
 
 # Create database connection string
 DB_CONNECTION_STRING="Host=${db_host};Database=${db_name};Username=${db_username};Password=${db_password};Port=5432;SSL Mode=Require;Trust Server Certificate=true;"
 
-# Get ECR login token and login to ECR
-aws ecr get-login-password --region ${aws_region} | docker login --username AWS --password-stdin ${ecr_registry}
-
-# Pull and run SimplCommerce container
-docker pull ${docker_image}
+# Pull and run SimplCommerce container with pre-built image
+docker pull docker.io/simplcommerce/ci-build:latest
 
 # Run the container with PostgreSQL connection
 docker run -d \
@@ -74,7 +61,7 @@ docker run -d \
   -e ASPNETCORE_ENVIRONMENT=Production \
   -e ASPNETCORE_URLS=http://+:5000 \
   -v /app/data:/app/data \
-  ${docker_image}
+  docker.io/simplcommerce/ci-build:latest
 
 # Create a simple health check script
 cat > /usr/local/bin/simplcommerce-health.sh << 'EOF'
@@ -93,17 +80,5 @@ chmod +x /usr/local/bin/simplcommerce-health.sh
 
 # Add health check to cron (every 5 minutes)
 echo "*/5 * * * * /usr/local/bin/simplcommerce-health.sh >> /var/log/simplcommerce-health.log 2>&1" | crontab -
-
-# Create log rotation for health check logs
-cat > /etc/logrotate.d/simplcommerce << 'EOF'
-/var/log/simplcommerce-health.log {
-    daily
-    rotate 7
-    compress
-    delaycompress
-    missingok
-    notifempty
-}
-EOF
 
 echo "SimplCommerce deployment completed successfully!"
