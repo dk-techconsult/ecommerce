@@ -1,4 +1,4 @@
-name: Deploy SimplCommerce to AWS (Destroy All on Failure)
+name: Deploy SimplCommerce to AWS (Force Delete RDS + Full Destroy)
 
 on:
   push:
@@ -8,6 +8,7 @@ on:
 env:
   AWS_REGION: us-west-1
   TF_VERSION: 1.13.3
+  RDS_INSTANCE_ID: simplcommerce-db
 
 jobs:
   terraform:
@@ -48,8 +49,18 @@ jobs:
     - name: Terraform Init
       run: terraform init
 
+    - name: Force delete RDS instance before destroy
+      run: |
+        echo "Disabling deletion protection for RDS instance..."
+        aws rds modify-db-instance --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --no-deletion-protection --region ${{ env.AWS_REGION }} || echo "Modify deletion protection failed or already disabled"
+
+        echo "Deleting RDS instance..."
+        aws rds delete-db-instance --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --skip-final-snapshot --region ${{ env.AWS_REGION }} || echo "Delete DB instance failed or already deleted"
+
+        echo "Waiting for RDS instance to be deleted..."
+        aws rds wait db-instance-deleted --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --region ${{ env.AWS_REGION }} || echo "Wait for deletion failed or instance already deleted"
+
     - name: Terraform Destroy ALL (Always Run First)
-      id: terraform-destroy
       run: terraform destroy -auto-approve -input=false || echo "Destroy failed or nothing to destroy, continuing"
 
     - name: Terraform Apply (Clean Deploy)
@@ -75,10 +86,17 @@ jobs:
           sleep 30
         done
 
-    - name: Cleanup on Failure (DESTROY EVERYTHING)
+    - name: Cleanup on Failure (Force Delete RDS + Destroy All)
       if: failure()
       run: |
-        echo "Deployment failed! Destroying ALL resources..."
+        echo "Deployment failed! Force deleting RDS and destroying ALL resources..."
+
+        aws rds modify-db-instance --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --no-deletion-protection --region ${{ env.AWS_REGION }} || echo "Modify deletion protection failed or already disabled"
+
+        aws rds delete-db-instance --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --skip-final-snapshot --region ${{ env.AWS_REGION }} || echo "Delete DB instance failed or already deleted"
+
+        aws rds wait db-instance-deleted --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --region ${{ env.AWS_REGION }} || echo "Wait for deletion failed or instance already deleted"
+
         terraform destroy -auto-approve -input=false || echo "Destroy failed but continuing"
 
     - name: Post Deployment Summary
