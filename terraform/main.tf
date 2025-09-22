@@ -187,7 +187,7 @@ resource "aws_db_instance" "postgres" {
 
 # EC2 Instance (without IAM role to avoid permissions issues)
 resource "aws_instance" "web" {
-  ami                    = "ami-0866a3c8686eaeeba" # Ubuntu 22.04 LTS (us-east-1)
+  ami                    = "ami-047d7c33f6e7b4bc4" # Ubuntu 22.04 LTS (us-west-1)
   instance_type          = var.instance_type
   key_name               = "tc"
   vpc_security_group_ids = [aws_security_group.ec2.id]

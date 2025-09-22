@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  AWS_REGION: us-east-1
+  AWS_REGION: us-west-1
   TF_VERSION: 1.13.3
 
 jobs:
@@ -102,5 +102,3 @@ jobs:
         echo "| SSH Command | \`ssh -i tc.pem ubuntu@${{ env.PUBLIC_IP }}\` |" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Your SimplCommerce store is now live!"
-
-
