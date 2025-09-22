@@ -158,7 +158,7 @@ resource "aws_db_subnet_group" "main" {
 resource "aws_db_instance" "postgres" {
   identifier     = "simplcommerce-db"
   engine         = "postgres"
-  engine_version = "15.5"
+  engine_version = "13.13"
   instance_class = "db.t3.micro"
   
   allocated_storage     = 20
